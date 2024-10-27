@@ -1,4 +1,4 @@
-#虚拟APRS气象站<br>
+# 虚拟APRS气象站<br>
 这是一个使用python3.8编写的虚拟APRS气象站<br>
 查看地址aprs.fi<br>
 可以实现每十分钟自动更新一次数据<br>
