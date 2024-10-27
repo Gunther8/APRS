@@ -1,0 +1,104 @@
+import requests
+import socket
+import time
+from datetime import datetime
+
+# APRS和天气API的配置信息
+CALLSIGN = "BI3MCY-10"
+PASSCODE = "*****"
+SERVER = "rotate.aprs2.net"  # 使用APRS-IS的备用服务器
+PORT = 14580
+LATITUDE = -2.83   # 
+LONGITUDE = 122.16 # 
+OPENWEATHER_API_KEY = "****"
+
+# 获取天气数据的函数
+def get_weather_data():
+    url = f"http://api.openweathermap.org/data/2.5/weather?lat={LATITUDE}&lon={LONGITUDE}&appid={OPENWEATHER_API_KEY}&units=metric"
+    response = requests.get(url)
+
+    # 检查请求是否成功
+    if response.status_code != 200:
+        print("Error fetching weather data:", response.status_code, response.text)
+        return None
+
+    data = response.json()
+
+    # 检查API响应内容是否包含"main"字段
+    if "main" not in data or "wind" not in data:
+        print("Unexpected data format:", data)
+        return None
+
+    # 解析所需的天气信息
+    weather_data = {
+        "temperature": data["main"]["temp"],
+        "humidity": data["main"]["humidity"],
+        "wind_speed": data["wind"]["speed"],
+        "wind_direction": data["wind"]["deg"]
+    }
+    return weather_data
+
+# 构建APRS数据包
+def format_aprs_packet(weather_data):
+    # 转换纬度和经度为APRS格式
+    lat_deg = int(abs(LATITUDE))
+    lat_min = (abs(LATITUDE) - lat_deg) * 60
+    lat_dir = 'N' if LATITUDE >= 0 else 'S'
+
+    lon_deg = int(abs(LONGITUDE))
+    lon_min = (abs(LONGITUDE) - lon_deg) * 60
+    lon_dir = 'E' if LONGITUDE >= 0 else 'W'
+
+    aprs_lat = f"{lat_deg:02d}{lat_min:05.2f}{lat_dir}"
+    aprs_lon = f"{lon_deg:03d}{lon_min:05.2f}{lon_dir}"
+
+    # 获取当前时间并格式化为APRS所需的格式（ddhhmmz）
+    timestamp = datetime.utcnow().strftime("%d%H%Mz")
+    # 附加信息
+    additional_info = "Airports WX in Python | gang8848@gmail.com"  # 自定义附加信息
+
+    # 格式化APRS数据包
+    aprs_packet = (
+        f"{CALLSIGN}>APRS,TCPIP*:@{timestamp}{aprs_lat}/{aprs_lon}_"
+        f"{weather_data['wind_direction']:03d}/{int(weather_data['wind_speed'] * 1.94):03d}"  # 风速转换为海里/小时
+        f"g...t{int(weather_data['temperature'] * 9/5 + 32):03d}"  # 温度转换为华氏度
+        f"h{weather_data['humidity']:02d}b{int(1013.25 * 10)}"
+        f" {additional_info}"  # 在这里添加附加信息
+    )
+    return aprs_packet
+
+# 将数据发送到APRS-IS服务器
+def send_to_aprs(aprs_packet):
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.connect((SERVER, PORT))
+            # 登录APRS-IS服务器
+            login_str = f"user {CALLSIGN} pass {PASSCODE} vers BI3MCY-Station v1.0\n"
+            s.sendall(login_str.encode("utf-8"))
+
+            # 发送APRS数据包
+            s.sendall((aprs_packet + "\n").encode("utf-8"))
+            print("数据已发送到APRS-IS服务器。")
+    except Exception as e:
+        print("发送数据时出错:", e)
+
+# 主循环
+if __name__ == "__main__":
+    while True:
+        weather_data = get_weather_data()
+        if weather_data is None:
+            print("无法获取天气数据，稍后重试。")
+            time.sleep(600)
+            continue
+        
+        aprs_packet = format_aprs_packet(weather_data)
+        
+        # 打印数据包以供调试
+        print("Weather Data:", weather_data)
+        print("APRS Packet:", aprs_packet)
+
+        # 发送数据
+        send_to_aprs(aprs_packet)
+        
+        # 每10分钟发送一次
+        time.sleep(600)
