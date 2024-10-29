@@ -2,34 +2,21 @@ import requests
 import socket
 import time
 from datetime import datetime
-
-# APRS和天气API的配置信息
-CALLSIGN = "BI3MCY-10"
-PASSCODE = "*****"
-SERVER = "rotate.aprs2.net"  # 使用APRS-IS的备用服务器
-PORT = 14580
-LATITUDE = -2.83   # 
-LONGITUDE = 122.16 # 
-OPENWEATHER_API_KEY = "****"
+import tkinter as tk
+from tkinter import ttk, messagebox
+import threading
+from PIL import Image, ImageDraw
+import pystray
 
 # 获取天气数据的函数
-def get_weather_data():
-    url = f"http://api.openweathermap.org/data/2.5/weather?lat={LATITUDE}&lon={LONGITUDE}&appid={OPENWEATHER_API_KEY}&units=metric"
+def get_weather_data(lat, lon, api_key):
+    url = f"http://api.openweathermap.org/data/2.5/weather?lat={lat}&lon={lon}&appid={api_key}&units=metric"
     response = requests.get(url)
-
-    # 检查请求是否成功
     if response.status_code != 200:
-        print("Error fetching weather data:", response.status_code, response.text)
         return None
-
     data = response.json()
-
-    # 检查API响应内容是否包含"main"字段
     if "main" not in data or "wind" not in data:
-        print("Unexpected data format:", data)
         return None
-
-    # 解析所需的天气信息
     weather_data = {
         "temperature": data["main"]["temp"],
         "humidity": data["main"]["humidity"],
@@ -39,66 +26,167 @@ def get_weather_data():
     return weather_data
 
 # 构建APRS数据包
-def format_aprs_packet(weather_data):
-    # 转换纬度和经度为APRS格式
-    lat_deg = int(abs(LATITUDE))
-    lat_min = (abs(LATITUDE) - lat_deg) * 60
-    lat_dir = 'N' if LATITUDE >= 0 else 'S'
+def format_aprs_packet(callsign, latitude, longitude, additional_info, weather_data):
+    lat_deg = int(abs(latitude))
+    lat_min = (abs(latitude) - lat_deg) * 60
+    lat_dir = 'N' if latitude >= 0 else 'S'
 
-    lon_deg = int(abs(LONGITUDE))
-    lon_min = (abs(LONGITUDE) - lon_deg) * 60
-    lon_dir = 'E' if LONGITUDE >= 0 else 'W'
+    lon_deg = int(abs(longitude))
+    lon_min = (abs(longitude) - lon_deg) * 60
+    lon_dir = 'E' if longitude >= 0 else 'W'
 
     aprs_lat = f"{lat_deg:02d}{lat_min:05.2f}{lat_dir}"
     aprs_lon = f"{lon_deg:03d}{lon_min:05.2f}{lon_dir}"
 
-    # 获取当前时间并格式化为APRS所需的格式（ddhhmmz）
-    timestamp = datetime.utcnow().strftime("%d%H%Mz")
-    # 附加信息
-    additional_info = "Airports WX in Python | gang8848@gmail.com"  # 自定义附加信息
+    from datetime import timezone
+    timestamp = datetime.now(timezone.utc).strftime("%d%H%Mz")
 
-    # 格式化APRS数据包
     aprs_packet = (
-        f"{CALLSIGN}>APRS,TCPIP*:@{timestamp}{aprs_lat}/{aprs_lon}_"
-        f"{weather_data['wind_direction']:03d}/{int(weather_data['wind_speed'] * 1.94):03d}"  # 风速转换为海里/小时
-        f"g...t{int(weather_data['temperature'] * 9/5 + 32):03d}"  # 温度转换为华氏度
+        f"{callsign}>APRS,TCPIP*:@{timestamp}{aprs_lat}/{aprs_lon}_"
+        f"{weather_data['wind_direction']:03d}/{int(weather_data['wind_speed'] * 1.94):03d}"
+        f"g...t{int(weather_data['temperature'] * 9/5 + 32):03d}"
         f"h{weather_data['humidity']:02d}b{int(1013.25 * 10)}"
-        f" {additional_info}"  # 在这里添加附加信息
+        f" {additional_info}"
     )
     return aprs_packet
 
 # 将数据发送到APRS-IS服务器
-def send_to_aprs(aprs_packet):
+def send_to_aprs(callsign, passcode, server, port, aprs_packet, status_label):
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.connect((SERVER, PORT))
-            # 登录APRS-IS服务器
-            login_str = f"user {CALLSIGN} pass {PASSCODE} vers BI3MCY-Station v1.0\n"
+            s.connect((server, port))
+            login_str = f"user {callsign} pass {passcode} vers Python-APRS-Station v1.0\n"
             s.sendall(login_str.encode("utf-8"))
-
-            # 发送APRS数据包
             s.sendall((aprs_packet + "\n").encode("utf-8"))
-            print("数据已发送到APRS-IS服务器。")
+            status_label.config(text="状态：数据已发送到APRS-IS服务器。")
     except Exception as e:
-        print("发送数据时出错:", e)
+        status_label.config(text=f"状态：发送数据时出错 - {e}")
 
-# 主循环
+# 定时发送功能
+class ScheduledSender:
+    def __init__(self, interval, send_func, status_label):
+        self.interval = interval
+        self.send_func = send_func
+        self.running = False
+        self.thread = None
+        self.status_label = status_label
+
+    def start(self):
+        if not self.running:
+            self.running = True
+            self.thread = threading.Thread(target=self._run)
+            self.thread.start()
+
+    def stop(self):
+        self.running = False
+        if self.thread:
+            self.thread.join()
+        self.status_label.config(text="状态：已停止定时发送")
+
+    def _run(self):
+        while self.running:
+            self.send_func()
+            for remaining in range(self.interval, 0, -1):
+                if not self.running:
+                    break
+                self.status_label.config(text=f"定时发送中，倒计时: {remaining}秒")
+                time.sleep(1)
+
+# 系统托盘管理
+def minimize_to_tray():
+    root.withdraw()  # 隐藏窗口
+    create_tray_icon()
+
+def create_tray_icon():
+    image = Image.new("RGB", (64, 64), color="blue")
+    d = ImageDraw.Draw(image)
+    d.text((10, 10), "APRS", fill="white")
+
+    def on_restore(icon, item):
+        icon.stop()
+        root.deiconify()  # 恢复窗口
+
+    def on_exit(icon, item):
+        icon.stop()
+        root.quit()  # 退出程序
+
+    menu = pystray.Menu(pystray.MenuItem("恢复", on_restore), pystray.MenuItem("退出", on_exit))
+    icon = pystray.Icon("APRS 发送器", image, "APRS虚拟气象站1.91", menu)
+    icon.run()
+
+# GUI界面
+def start_gui():
+    def on_send():
+        send_aprs_data()
+
+    def send_aprs_data():
+        try:
+            callsign = callsign_entry.get()
+            passcode = passcode_entry.get()
+            latitude = float(latitude_entry.get())
+            longitude = float(longitude_entry.get())
+            additional_info = additional_info_entry.get()
+            server = "rotate.aprs2.net"
+            port = 14580
+            api_key = "2b04d4b9dbc491b139271ebbd345fa63"
+
+            weather_data = get_weather_data(latitude, longitude, api_key)
+            if not weather_data:
+                status_label.config(text="状态：无法获取天气数据，请检查API密钥和网络连接。")
+                return
+
+            aprs_packet = format_aprs_packet(callsign, latitude, longitude, additional_info, weather_data)
+            send_to_aprs(callsign, passcode, server, port, aprs_packet, status_label)
+        except ValueError:
+            status_label.config(text="状态：输入错误，请输入有效的经纬度。")
+
+    def on_start_schedule():
+        sender.start()
+
+    def on_stop_schedule():
+        sender.stop()
+
+    root.protocol("WM_DELETE_WINDOW", minimize_to_tray)
+    
+    def on_minimize(event):
+        if root.state() == 'iconic':
+            minimize_to_tray()
+
+    root.geometry("350x320")
+    root.resizable(False, False)
+    style = ttk.Style(root)
+    style.theme_use("clam")
+
+    labels = ["呼号:", "密码:", "纬度:", "经度:", "附加信息:"]
+    entries = []
+    default_values = ["BI3MCY-10", "****", "-2.815", "122.168", "Airports WX in Python | gang8848@gmail.com"]
+
+    for i, label in enumerate(labels):
+        ttk.Label(root, text=label).grid(row=i, column=0, padx=10, pady=5, sticky="w")
+        entry = ttk.Entry(root, width=30)
+        entry.insert(0, default_values[i])
+        entry.grid(row=i, column=1, padx=10, pady=5)
+        entries.append(entry)
+
+    callsign_entry, passcode_entry, latitude_entry, longitude_entry, additional_info_entry = entries
+
+    send_button = ttk.Button(root, text="发送数据", command=on_send)
+    send_button.grid(row=len(labels), column=0, columnspan=2, pady=5)
+
+    schedule_button = ttk.Button(root, text="定时发送", command=on_start_schedule)
+    schedule_button.grid(row=len(labels) + 1, column=0, columnspan=2, pady=5)
+
+    stop_button = ttk.Button(root, text="停止", command=on_stop_schedule)
+    stop_button.grid(row=len(labels) + 2, column=0, columnspan=2, pady=5)
+
+    status_label = ttk.Label(root, text="状态：未启动定时发送")
+    status_label.grid(row=len(labels) + 3, column=0, columnspan=2, pady=5)
+
+    sender = ScheduledSender(interval=600, send_func=send_aprs_data, status_label=status_label)
+    root.bind("<Unmap>", on_minimize)
+    root.mainloop()
+
 if __name__ == "__main__":
-    while True:
-        weather_data = get_weather_data()
-        if weather_data is None:
-            print("无法获取天气数据，稍后重试。")
-            time.sleep(600)
-            continue
-        
-        aprs_packet = format_aprs_packet(weather_data)
-        
-        # 打印数据包以供调试
-        print("Weather Data:", weather_data)
-        print("APRS Packet:", aprs_packet)
-
-        # 发送数据
-        send_to_aprs(aprs_packet)
-        
-        # 每10分钟发送一次
-        time.sleep(600)
+    root = tk.Tk()
+    root.title("APRS虚拟气象站1.91")
+    start_gui()
