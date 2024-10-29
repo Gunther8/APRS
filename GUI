@@ -128,7 +128,7 @@ def start_gui():
             additional_info = additional_info_entry.get()
             server = "rotate.aprs2.net"
             port = 14580
-            api_key = "2b04d4b9dbc491b139271ebbd345fa63"
+            api_key = "2b04d4b9dbc491666"
 
             weather_data = get_weather_data(latitude, longitude, api_key)
             if not weather_data:
