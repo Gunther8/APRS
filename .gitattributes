@@ -1,0 +1,2 @@
+# Specify the language of the project
+*.py linguist-language=Python
