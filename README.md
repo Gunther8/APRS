@@ -4,5 +4,4 @@
 可以实现每十分钟自动更新一次数据<br>
 数据来源[openweather](https://openweathermap.org/),使用免费API<br>
 上传温度，温度，气压，风速，以及注释<br>
-后续更新了GUI，增加在系统托盘运行功能<br>
-我其实不懂编程，这是在chatGPT的帮忙下完成的<br>
+
